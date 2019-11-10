@@ -2,15 +2,16 @@
 
 DeepKE 是基于 Pytorch 的深度学习中文关系抽取处理套件。
 
+> 还在更新维护！！！
+`由于使用 hydra0.10 版本，存在严重bug，已提交pr和issue，但作者说下个版本才会更新。。。等0.11版本就会更新到master`
+
 ## 环境依赖:
 
 - python >= 3.6
 - torch >= 1.0
 - jieba >= 0.38
-- matplotlib >= 3.0
-- pytorch_transformers >= 1.2
-- scikit_learn >= 0.20
-
+- transformers >= 2.0
+- hydra-core>=0.10
 
 
 ## 主要目录
@@ -94,4 +95,3 @@ sentence|relation|head|head_type|head_offset|tail|tail_type|tail_offset
 > Author: [余海阳](mailto:yuhaiyang@zju.edu.cn)
 
 > Organization: [浙江大学知识引擎实验室](http://openkg.cn/)
-

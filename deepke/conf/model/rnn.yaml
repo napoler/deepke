@@ -1,0 +1,9 @@
+model_name: rnn
+
+type_rnn: 'RNN'  # [RNN, GRU, LSTM]
+input_size: 100
+hidden_size: 150  # 必须为偶数
+num_layers: 2
+dropout: 0.3
+bidirectional: True
+last_layer_hn: True

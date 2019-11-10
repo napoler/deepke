@@ -1,211 +1,170 @@
 import os
-import jieba
 import logging
-from typing import List, Dict
-from pytorch_transformers import BertTokenizer
-# self file
-from deepke.vocab import Vocab
-from deepke.config import config
-from deepke.utils import ensure_dir, save_pkl, load_csv
+from typing import List, Dict, Tuple
+from transformers import BertTokenizer
+# self
+from serializer import Serializer
+from vocab import Vocab
+from utils import save_pkl, load_csv
 
-jieba.setLogLevel(logging.INFO)
-
-Path = str
+logger = logging.getLogger(__name__)
 
 
-def _mask_feature(entities_idx: List, sen_len: int) -> List:
-    left = [1] * (entities_idx[0] + 1)
-    middle = [2] * (entities_idx[1] - entities_idx[0] - 1)
-    right = [3] * (sen_len - entities_idx[1])
-
-    return left + middle + right
-
-
-def _pos_feature(sent_len: int, entity_idx: int, entity_len: int, pos_limit: int) -> List:
-
-    left = list(range(-entity_idx, 0))
-    middle = [0] * entity_len
-    right = list(range(1, sent_len - entity_idx - entity_len + 1))
-    pos = left + middle + right
-
+def _handle_pos_limit(pos: List[int], limit: int) -> List[int]:
     for i, p in enumerate(pos):
-        if p > pos_limit:
-            pos[i] = pos_limit
-        if p < -pos_limit:
-            pos[i] = -pos_limit
-    pos = [p + pos_limit + 1 for p in pos]
-
-    return pos
+        if p > limit:
+            pos[i] = limit
+        if p < -limit:
+            pos[i] = -limit
+    return [p + limit + 1 for p in pos]
 
 
-def _build_data(data: List[Dict], vocab: Vocab, relations: Dict) -> List[Dict]:
-    if vocab.name == 'LM':
-        for d in data:
-            d['target'] = relations[d['relation']]
+def _add_pos_seq(train_data: List[Dict], cfg):
+    for d in train_data:
+        entities_idx = [d['head_idx'], d['tail_idx']] if d['head_idx'] < d['tail_idx'] else [d['tail_idx'], d['head_idx']]
 
-        return data
+        d['head_pos'] = list(map(lambda i: i - d['head_idx'], list(range(d['seq_len']))))
+        d['head_pos'] = _handle_pos_limit(d['head_pos'], int(cfg.pos_limit))
 
-    for d in data:
-        word2idx = [vocab.word2idx.get(w, 1) for w in d['sentence']]
-        seq_len = len(word2idx)
-        head_idx, tail_idx = int(d['head_offset']), int(d['tail_offset'])
-        if vocab.name == 'word':
-            head_len, tail_len = 1, 1
-        else:
-            head_len, tail_len = len(d['head_type']), len(d['tail_type'])
-        entities_idx = [head_idx, tail_idx] if tail_idx > head_idx else [tail_idx, head_idx]
-        head_pos = _pos_feature(seq_len, head_idx, head_len, config.pos_limit)
-        tail_pos = _pos_feature(seq_len, tail_idx, tail_len, config.pos_limit)
-        mask_pos = _mask_feature(entities_idx, seq_len)
-        target = relations[d['relation']]
+        d['tail_pos'] = list(map(lambda i: i - d['tail_idx'], list(range(d['seq_len']))))
+        d['tail_pos'] = _handle_pos_limit(d['tail_pos'], int(cfg.pos_limit))
 
-        d['word2idx'] = word2idx
-        d['seq_len'] = seq_len
-        d['head_pos'] = head_pos
-        d['tail_pos'] = tail_pos
-        d['mask_pos'] = mask_pos
-        d['target'] = target
-
-    return data
+        d['entities_pos'] = [1] * (entities_idx[0] + 1) + [2] * (entities_idx[1] - entities_idx[0] - 1) + [3] * (d['seq_len'] - entities_idx[1])
 
 
-def _build_vocab(data: List[Dict], out_path: Path) -> Vocab:
-    if config.word_segment:
-        vocab = Vocab('word')
-    else:
-        vocab = Vocab('char')
+def _convert_tokens_into_index(data: List[Dict], vocab):
+    unk_str = '[UNK]'
+    unk_idx = vocab.word2idx[unk_str]
 
     for d in data:
-        vocab.add_sent(d['sentence'])
-    vocab.trim(config.min_freq)
-
-    ensure_dir(out_path)
-    vocab_path = os.path.join(out_path, 'vocab.pkl')
-    vocab_txt = os.path.join(out_path, 'vocab.txt')
-    save_pkl(vocab_path, vocab, 'vocab')
-    with open(vocab_txt, 'w', encoding='utf-8') as f:
-        f.write(os.linesep.join([word for word in vocab.word2idx.keys()]))
-    return vocab
+        d['token2idx'] = [vocab.word2idx.get(i, unk_idx) for i in d['tokens']]
+        d['seq_len'] = len(d['token2idx'])
 
 
-def _split_sent(data: List[Dict], verbose: bool = True) -> List[Dict]:
-    if verbose:
-        print('need word segment, use jieba to split sentence')
-
-    jieba.add_word('HEAD')
-    jieba.add_word('TAIL')
-
-    for d in data:
-        sent = d['sentence']
-        sent = sent.replace(d['head_type'], 'HEAD', 1)
-        sent = sent.replace(d['tail_type'], 'TAIL', 1)
-        sent = jieba.lcut(sent)
-        head_idx, tail_idx = sent.index('HEAD'), sent.index('TAIL')
-        sent[head_idx], sent[tail_idx] = d['head_type'], d['tail_type']
-        d['sentence'] = sent
-        d['head_offset'] = head_idx
-        d['tail_offset'] = tail_idx
-
-    return data
-
-
-def _add_lm_data(data: List[Dict]) -> List[Dict]:
-    '使用语言模型的词表，序列化输入的句子'
-    tokenizer = BertTokenizer.from_pretrained(config.lm.lm_file)
-
-    for d in data:
-        sent = d['sentence']
-        sent += '[SEP]' + d['head'] + '[SEP]' + d['tail']
-
-        d['lm_idx'] = tokenizer.encode(sent, add_special_tokens=True)
-        d['seq_len'] = len(d['lm_idx'])
-
-    return data
-
-
-def _replace_entity_by_type(data: List[Dict]) -> List[Dict]:
+def _serialize_sentence(data: List[Dict], serial, cfg):
     for d in data:
         sent = d['sentence'].strip()
-        sent = sent.replace(d['head'], d['head_type'], 1)
-        sent = sent.replace(d['tail'], d['tail_type'], 1)
-        head_offset = sent.index(d['head_type'])
-        tail_offset = sent.index(d['tail_type'])
 
-        d['sentence'] = sent
-        d['head_offset'] = head_offset
-        d['tail_offset'] = tail_offset
-
-    return data
-
-
-def _load_relations(fp: Path) -> Dict:
-    '读取关系文件，并将关系保存为词典格式，用来序列化关系'
-
-    print(f'load {fp}')
-    relations_arr = []
-    relations_dict = {}
-
-    with open(fp, encoding='utf-8') as f:
-        for l in f:
-            relations_arr.append(l.strip())
-
-    for k, v in enumerate(relations_arr):
-        relations_dict[v] = k
-
-    return relations_dict
+        if cfg.replace_entity_with_type:
+            if cfg.chinese_split:
+                sent = sent.replace(d['head'], 'HEAD', 1).replace(d['tail'], 'TAIL', 1)
+                d['tokens'] = serial(sent, never_split=['HEAD', 'TAIL'])
+                head_idx, tail_idx = d['tokens'].index('HEAD'), d['tokens'].index('TAIL')
+                d['tokens'][head_idx], d['tokens'][tail_idx] = d['head_type'], d['tail_type']
+            else:
+                sent = sent.replace(d['head'], d['head_type'], 1).replace(d['tail'], d['tail_type'], 1)
+                d['tokens'] = serial(sent)
+                head_idx, tail_idx = sent.index(d['head_type']), sent.index(d['tail_type'])
+            d['head_idx'], d['tail_idx'] = head_idx, tail_idx
+        else:
+            if cfg.chinese_split:
+                sent = sent.replace(d['head'], 'HEAD', 1).replace(d['tail'], 'TAIL', 1)
+                d['tokens'] = serial(sent, never_split=['HEAD', 'TAIL'])
+                head_idx, tail_idx = d['tokens'].index('HEAD'), d['tokens'].index('TAIL')
+                d['tokens'][head_idx], d['tokens'][tail_idx] = d['head'], d['tail']
+            else:
+                d['tokens'] = serial(sent)
+                head_idx, tail_idx = sent.index(d['head']), sent.index(d['tail'])
+            d['head_idx'], d['tail_idx'] = head_idx, tail_idx
 
 
-def process(data_path: Path, out_path: Path) -> None:
-    print('===== start preprocess data =====')
-    train_fp = os.path.join(data_path, 'train.csv')
-    test_fp = os.path.join(data_path, 'test.csv')
-    relation_fp = os.path.join(data_path, 'relation.txt')
+def _lm_serialize(data: List[Dict], cfg):
+    logger.info('use bert tokenizer...')
+    tokenizer = BertTokenizer.from_pretrained(cfg.lm_file)
+    for d in data:
+        sent = d['sentence'].strip()
+        sent = sent.replace(d['head'], d['head_type'], 1).replace(d['tail'], d['tail_type'], 1)
+        sent += '[SEP]' + d['head'] + '[SEP]' + d['tail']
+        d['token2idx'] = tokenizer.encode(sent, add_special_tokens=True)
 
-    print('load raw files...')
-    train_raw_data = load_csv(train_fp)
-    test_raw_data = load_csv(test_fp)
-    relations = _load_relations(relation_fp)
 
-    # 使用 entity type 替换句子中的 entity
-    # 这样训练效果会提升很多
-    if config.replace_entity_by_type:
-        train_raw_data = _replace_entity_by_type(train_raw_data)
-        test_raw_data = _replace_entity_by_type(test_raw_data)
+def _handle_relation_data(relation_data: List[Dict]) -> Tuple:
+    rels = dict()
+    for d in relation_data:
+        rels[d['relation']] = d['index']
 
-    # 使用预训练语言模型时
-    if config.model_name == 'LM':
-        print('\nuse pretrained language model serialize sentence...')
-        train_raw_data = _add_lm_data(train_raw_data)
-        test_raw_data = _add_lm_data(test_raw_data)
-        vocab = Vocab('LM')
+    heads = [d['head'] for d in relation_data][1:]
+    tails = [d['tail'] for d in relation_data][1:]
 
+    return rels, heads, tails
+
+
+def preprocess(cfg):
+
+    logger.info('===== start preprocess data =====')
+    train_fp = os.path.join(cfg.cwd, cfg.data_path, 'train.csv')
+    valid_fp = os.path.join(cfg.cwd, cfg.data_path, 'valid.csv')
+    test_fp = os.path.join(cfg.cwd, cfg.data_path, 'test.csv')
+    relation_fp = os.path.join(cfg.cwd, cfg.data_path, 'relation.csv')
+
+    logger.info('load raw files...')
+    train_data = load_csv(train_fp)
+    valid_data = load_csv(valid_fp)
+    test_data = load_csv(test_fp)
+    relation_data = load_csv(relation_fp)
+
+    logger.info('convert relation into index...')
+    rels, heads, tails = _handle_relation_data(relation_data)
+    for d in train_data:
+        d['rel2idx'] = rels[d['relation']]
+    for d in valid_data:
+        d['rel2idx'] = rels[d['relation']]
+    for d in test_data:
+        d['rel2idx'] = rels[d['relation']]
+
+    logger.info('verify whether use pretrained language models...')
+    if cfg.model_name == 'lm':
+        logger.info('use pretrained language models serialize sentence...')
+        _lm_serialize(train_data, cfg)
+        _lm_serialize(valid_data, cfg)
+        _lm_serialize(test_data, cfg)
     else:
-        # 当为中文时是否需要分词操作，如果句子已为分词的结果，则不需要分词
-        print('\nverify whether need split words...')
-        if config.is_chinese and config.word_segment:
-            train_raw_data = _split_sent(train_raw_data)
-            test_raw_data = _split_sent(test_raw_data, verbose=False)
+        logger.info('serialize sentence into tokens...')
+        serializer = Serializer(do_chinese_split=cfg.chinese_split, never_split=[*heads, *tails] if cfg.chinese_split else None)
+        serial = serializer.serialize
+        _serialize_sentence(train_data, serial, cfg)
+        _serialize_sentence(valid_data, serial, cfg)
+        _serialize_sentence(test_data, serial, cfg)
 
-        print('build word vocabulary...')
-        vocab = _build_vocab(train_raw_data, out_path)
+        logger.info('build vocabulary...')
+        vocab = Vocab('word')
+        train_tokens = [d['tokens'] for d in train_data]
+        valid_tokens = [d['tokens'] for d in valid_data]
+        test_tokens = [d['tokens'] for d in test_data]
+        sent_tokens = [*train_tokens, *valid_tokens, *test_tokens]
+        for sent in sent_tokens:
+            vocab.add_words(sent)
+        vocab.trim(min_freq=cfg.min_freq)
 
-    print('\nbuild train data...')
-    train_data = _build_data(train_raw_data, vocab, relations)
-    print('build test data...\n')
-    test_data = _build_data(test_raw_data, vocab, relations)
+        logger.info('convert tokens into index...')
+        _convert_tokens_into_index(train_data, vocab)
+        _convert_tokens_into_index(valid_data, vocab)
+        _convert_tokens_into_index(test_data, vocab)
 
-    ensure_dir(out_path)
-    train_data_path = os.path.join(out_path, 'train.pkl')
-    test_data_path = os.path.join(out_path, 'test.pkl')
+        logger.info('build position sequence...')
+        _add_pos_seq(train_data, cfg)
+        _add_pos_seq(valid_data, cfg)
+        _add_pos_seq(test_data, cfg)
 
-    save_pkl(train_data_path, train_data, 'train data')
-    save_pkl(test_data_path, test_data, 'test data')
+    logger.info('save data for backup...')
+    os.makedirs(os.path.join(cfg.cwd, 'data/out'), exist_ok=True)
+    train_save_fp = os.path.join(cfg.cwd, cfg.out_path, 'train.pkl')
+    valid_save_fp = os.path.join(cfg.cwd, cfg.out_path, 'valid.pkl')
+    test_save_fp = os.path.join(cfg.cwd, cfg.out_path, 'test.pkl')
+    save_pkl(train_data, train_save_fp)
+    save_pkl(valid_data, valid_save_fp)
+    save_pkl(test_data, test_save_fp)
 
-    print('===== end preprocess data =====')
+    if cfg.model_name != 'lm':
+        vocab_save_fp = os.path.join(cfg.cwd, cfg.out_path, 'vocab.pkl')
+        vocab_txt = os.path.join(cfg.cwd, cfg.out_path, 'vocab.txt')
+        save_pkl(vocab, vocab_save_fp)
+        logger.info('save vocab in txt file, for watching...')
+        with open(vocab_txt, 'w', encoding='utf-8') as f:
+            f.write(os.linesep.join(vocab.word2idx.keys()))
+
+    logger.info('===== end preprocess data =====')
 
 
-if __name__ == "__main__":
-    data_path = '../data/origin'
-    out_path = '../data/out'
-
-    process(data_path, out_path)
+if __name__ == '__main__':
+    pass

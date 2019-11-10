@@ -1,0 +1,20 @@
+# 原始数据存放位置
+data_path: 'data/origin'
+
+# 预处理后存放文件位置
+out_path: 'data/out'
+
+# 当使用预训练语言模型时，该预训练的模型存放位置
+lm_file: 'bert_pretrained'
+
+# 是否需要分词
+chinese_split: False
+
+# 是否需要使用实体类型替换实体词语
+replace_entity_with_type: True
+
+# vocab 构建时的最低词频控制
+min_freq: 2
+
+# 句长限制
+pos_limit: 50

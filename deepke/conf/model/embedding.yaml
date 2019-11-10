@@ -1,0 +1,8 @@
+# populated at runtime
+vocab_size: ???
+
+word_dim: 100
+pos_size: 102  # 2 * pos_limit + 2
+pos_dim: 5 # 当为 cat 时，此值无效，和 word_dim 强行相同
+
+dim_strategy: cat # [cat, sum]

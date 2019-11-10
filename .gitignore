@@ -6,6 +6,8 @@
 __pycache__
 *.pyc
 
+test/.pytest_cache
+
 checkpoints/*.pth
 
 bert_pretrained/*
@@ -15,4 +17,3 @@ data/out
 data/origin/statics.py
 
 demo.py
-predict.py

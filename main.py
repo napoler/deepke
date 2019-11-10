@@ -1,97 +1,80 @@
 import os
-import argparse
-import warnings
 import torch
+from torch import optim
 import torch.nn as nn
-import torch.optim as optim
+import hydra
+from hydra import utils
+import logging
 from torch.utils.data import DataLoader
-from deepke.config import config
-from deepke import model
-from deepke.utils import make_seed, load_pkl
-from deepke.trainer import train, validate
-from deepke.preprocess import process
-from deepke.dataset import CustomDataset, collate_fn
+# self
+import models
+from preprocess import preprocess
+from dataset import CustomDataset, collate_fn
+from trainer import train
+from utils import manual_seed, load_pkl
 
-warnings.filterwarnings("ignore")
+logger = logging.getLogger(__name__)
 
-__Models__ = {
-    "CNN": model.CNN,
-    "RNN": model.BiLSTM,
-    "GCN": model.GCN,
-    "Transformer": model.Transformer,
-    "Capsule": model.Capsule,
-    "LM": model.LM,
-}
 
-parser = argparse.ArgumentParser(description='choose your model')
-parser.add_argument('--model_name', type=str, help='model name: [CNN, RNN, GCN, Capsule, Transformer, LM]')
-args = parser.parse_args()
-model_name = args.model_name if args.model_name else config.model_name
+@hydra.main(config_path='conf/config.yaml')
+def main(cfg):
+    # print(cfg.pretty())
+    # todo
+    # cwd api 目前还没发布，只能自己修改
+    cwd = utils.get_original_cwd()
+    cfg.cwd = cwd
 
-make_seed(config.training.seed)
+    manual_seed(cfg.seed)
 
-if config.training.use_gpu and torch.cuda.is_available():
-    device = torch.device('cuda', config.training.gpu_id)
-else:
-    device = torch.device('cpu')
+    __Model__ = {
+        'cnn': models.PCNN,
+    }
 
-# if not os.path.exists(config.out_path):
-process(config.data_path, config.out_path)
 
-train_data_path = os.path.join(config.out_path, 'train.pkl')
-test_data_path = os.path.join(config.out_path, 'test.pkl')
+    # device
+    if cfg.use_gpu and torch.cuda.is_available():
+        device = torch.device('cuda', cfg.gpu_id)
+    else:
+        device = torch.device('cpu')
+    logger.info(f'device: {device}')
 
-if model_name == 'LM':
-    vocab_size = None
-else:
-    vocab_path = os.path.join(config.out_path, 'vocab.pkl')
-    vocab = load_pkl(vocab_path)
-    vocab_size = len(vocab.word2idx)
+    # preprocess(cfg)
 
-train_dataset = CustomDataset(train_data_path)
-train_dataloader = DataLoader(train_dataset,
-                              batch_size=config.training.batch_size,
-                              shuffle=True,
-                              collate_fn=collate_fn)
-test_dataset = CustomDataset(test_data_path)
-test_dataloader = DataLoader(
-    test_dataset,
-    batch_size=config.training.batch_size,
-    shuffle=False,
-    collate_fn=collate_fn,
-)
+    train_data_path = os.path.join(cfg.cwd, cfg.out_path, 'train.pkl')
+    valid_data_path = os.path.join(cfg.cwd, cfg.out_path, 'valid.pkl')
+    test_data_path = os.path.join(cfg.cwd, cfg.out_path, 'test.pkl')
+    vocab_path = os.path.join(cfg.cwd, cfg.out_path, 'vocab.pkl')
 
-model = __Models__[model_name](vocab_size, config)
-model.to(device)
-# print(model)
+    if cfg.model_name == 'lm':
+        vocab_size = None
+    else:
+        vocab = load_pkl(vocab_path)
+        vocab_size = vocab.count
+    cfg.vocab_size = vocab_size
 
-optimizer = optim.Adam(model.parameters(), lr=config.training.learning_rate)
-scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer,
-                                                 'max',
-                                                 factor=config.training.decay_rate,
-                                                 patience=config.training.decay_patience)
-criterion = nn.CrossEntropyLoss()
+    train_dataset = CustomDataset(train_data_path)
+    valid_dataset = CustomDataset(valid_data_path)
+    test_dataset = CustomDataset(test_data_path)
 
-best_macro_f1, best_macro_epoch = 0, 1
-best_micro_f1, best_micro_epoch = 0, 1
-best_macro_model, best_micro_model = '', ''
-print('=' * 10, ' Start training ', '=' * 10)
+    train_dataloader = DataLoader(train_dataset, batch_size=cfg.batch_size, shuffle=True, collate_fn=collate_fn)
+    valid_dataloader = DataLoader(valid_dataset, batch_size=cfg.batch_size, shuffle=True, collate_fn=collate_fn)
+    test_dataloader = DataLoader(test_dataset, batch_size=cfg.batch_size, shuffle=True, collate_fn=collate_fn)
 
-for epoch in range(1, config.training.epoch + 1):
-    train(epoch, device, train_dataloader, model, optimizer, criterion, config)
-    macro_f1, micro_f1 = validate(test_dataloader, model, device, config)
-    model_name = model.save(epoch=epoch)
-    scheduler.step(macro_f1)
+    model = __Model__[cfg.model_name](cfg)
+    model.to(device)
+    logger.info(f'\n {model}')
 
-    if macro_f1 > best_macro_f1:
-        best_macro_f1 = macro_f1
-        best_macro_epoch = epoch
-        best_macro_model = model_name
-    if micro_f1 > best_micro_f1:
-        best_micro_f1 = micro_f1
-        best_micro_epoch = epoch
-        best_micro_model = model_name
+    optimizer = optim.Adam(model.parameters(),lr=cfg.learning_rate)
+    criterion = nn.CrossEntropyLoss()
 
-print('=' * 10, ' End training ', '=' * 10)
-print(f'best macro f1: {best_macro_f1:.4f},', f'in epoch: {best_macro_epoch}, saved in: {best_macro_model}')
-print(f'best micro f1: {best_micro_f1:.4f},', f'in epoch: {best_micro_epoch}, saved in: {best_micro_model}')
+    best_macro_f1, best_macro_epoch = 0, 1
+    best_micro_f1, best_micro_epoch = 0, 1
+    best_macro_model, best_micro_model = '', ''
+    logger.info('=' * 10 + ' Start training ' + '=' * 10)
+
+    for epoch in range(1, cfg.epoch+1):
+        pass
+        # train(epoch, model, train_dataloader, optimizer, criterion, device, cfg)
+
+if __name__ == '__main__':
+    main()

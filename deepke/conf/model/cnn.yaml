@@ -1,0 +1,8 @@
+model_name: cnn
+
+in_channels: 100
+out_channels: 200
+kernel_sizes: [3, 5, 7, 9, 11]
+activation: 'gelu'   # [relu, lrelu, prelu, selu, celu, gelu, sigmoid, tanh]
+pooling_strategy: 'max'  # [max, avg, cls]
+dropout: 0.3
