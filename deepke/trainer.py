@@ -5,9 +5,9 @@ from sklearn.metrics import precision_recall_fscore_support
 from deepke.utils import to_one_hot
 
 
-def train(epoch, device, dataloader, model, optimizer, criterion, config):
+def train(epoch, device, dataloader, model, optimizer, criterion, config,total_loss=[]):
     model.train()
-    total_loss = []
+    # total_loss = []
 
     for batch_idx, (*x, y) in enumerate(dataloader, 1):
         x = [i.to(device) for i in x]
@@ -33,11 +33,20 @@ def train(epoch, device, dataloader, model, optimizer, criterion, config):
                                                                            100. * batch_idx / len(dataloader),
                                                                            loss.item()))
 
-    # plot
-    if config.training.show_plot:
-        plt.plot(total_loss)
-        plt.title('loss')
-        plt.show()
+    # # plot
+    # if config.training.show_plot:
+    #     plt.plot(total_loss)
+    #     plt.title('loss')
+    #     plt.show()
+    return total_loss
+    
+
+def plot(total_loss,config):
+        # plot
+    # if config.training.show_plot:
+    plt.plot(total_loss)
+    plt.title('loss')
+    plt.show()
 
 
 def validate(dataloader, model, device, config):

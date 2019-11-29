@@ -9,7 +9,7 @@ class TrainingConfig(object):
     batch_size = 64
     train_log = True
     log_interval = 10
-    show_plot = True
+    show_plot = False
     f1_norm = ['macro', 'micro']
 
 

@@ -8,7 +8,7 @@ from torch.utils.data import DataLoader
 from deepke.config import config
 from deepke import model
 from deepke.utils import make_seed, load_pkl
-from deepke.trainer import train, validate
+from deepke.trainer import train, validate,plot
 from deepke.preprocess import process
 from deepke.dataset import CustomDataset, collate_fn
 
@@ -25,6 +25,7 @@ __Models__ = {
 
 parser = argparse.ArgumentParser(description='choose your model')
 parser.add_argument('--model_name', type=str, help='model name: [CNN, RNN, GCN, Capsule, Transformer, LM]')
+parser.add_argument('--epoch', type=int, help='运行的epoch次数　迭代次数')
 args = parser.parse_args()
 model_name = args.model_name if args.model_name else config.model_name
 
@@ -77,21 +78,24 @@ best_micro_f1, best_micro_epoch = 0, 1
 best_macro_model, best_micro_model = '', ''
 print('=' * 10, ' Start training ', '=' * 10)
 
-for epoch in range(1, config.training.epoch + 1):
-    train(epoch, device, train_dataloader, model, optimizer, criterion, config)
+# for epoch in range(1, config.training.epoch + 1):
+for epoch in range(1 ,args.epoch+1):
+    total_loss=train(epoch, device, train_dataloader, model, optimizer, criterion, config)
     macro_f1, micro_f1 = validate(test_dataloader, model, device, config)
     model_name = model.save(epoch=epoch)
-    scheduler.step(macro_f1)
+ 
+    if epoch== args.epoch+ 1: 
+        scheduler.step(macro_f1)
+        if macro_f1 > best_macro_f1:
+            best_macro_f1 = macro_f1
+            best_macro_epoch = epoch
+            best_macro_model = model_name
+        if micro_f1 > best_micro_f1:
+            best_micro_f1 = micro_f1
+            best_micro_epoch = epoch
+            best_micro_model = model_name
 
-    if macro_f1 > best_macro_f1:
-        best_macro_f1 = macro_f1
-        best_macro_epoch = epoch
-        best_macro_model = model_name
-    if micro_f1 > best_micro_f1:
-        best_micro_f1 = micro_f1
-        best_micro_epoch = epoch
-        best_micro_model = model_name
-
-print('=' * 10, ' End training ', '=' * 10)
-print(f'best macro f1: {best_macro_f1:.4f},', f'in epoch: {best_macro_epoch}, saved in: {best_macro_model}')
-print(f'best micro f1: {best_micro_f1:.4f},', f'in epoch: {best_micro_epoch}, saved in: {best_micro_model}')
+        print('=' * 10, ' End training ', '=' * 10)
+        print(f'best macro f1: {best_macro_f1:.4f},', f'in epoch: {best_macro_epoch}, saved in: {best_macro_model}')
+        print(f'best micro f1: {best_micro_f1:.4f},', f'in epoch: {best_micro_epoch}, saved in: {best_micro_model}')
+plot(total_loss=total_loss,config=config)
